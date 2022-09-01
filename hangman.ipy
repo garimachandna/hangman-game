@@ -1,0 +1,214 @@
+"""A hangman game that can be played by one or more players."""
+#for AI run using-> python hangman.ipy nounlist.txt -c -v nounlist.txt
+#for human players run using-> python hangman.ipy nounlist.txt Alex Jane
+
+from argparse import ArgumentParser
+from random import choice
+import re
+import sys
+
+MIN_WORD_LEN = 5
+MAX_BAD_GUESSES = 6
+
+class GameState:
+   
+    def __init__(self, word, guesses, guessed_words, score, max_score):
+        def char_or_mask(char, mask):
+           
+            if char in guesses:
+                return char
+            return mask
+
+        self.board = " ".join(char_or_mask(c, "\u2022") for c in word)
+        self.expr = ("^"
+                     + "".join(char_or_mask(c, ".") for c in word)
+                     + "$")
+
+        self.guesses = guesses.copy()
+        self.bad_guesses = guesses - set(word)
+        self.good_guesses = guesses & set(word)
+        self.blank_count = self.board.count("\u2022")
+        self.unguessed = set("ABCDEFGHIJKLMNOPQRSTUVWXYZ") - guesses
+        self.guessed_words = guessed_words
+        self.score = score.copy()
+        self.max_score = max_score
+    
+    def __str__(self):
+        result = [self.board,
+                  f"Bad guesses: {sorted(self.bad_guesses)}"]
+
+        
+        for name, score in self.score.items():
+            msg = f"{name} has made {score} of {self.max_score} bad guesses"
+            result.append(msg)
+        return "\n".join(result)
+    
+    def match(self, s):
+            return bool(re.search(self.expr, s.strip()))
+    
+
+class Game:
+    
+    def __init__(self, words, players):
+     
+        if not all(isinstance(p, Player) for p in players):
+            raise ValueError("players must be a list of Player objects")
+        if len({p.name for p in players}) < len(players):
+            raise ValueError("no two players may have the same name")
+        self.players = players
+        self.score = {p.name: 0 for p in players}
+        self.word = choice(words).upper()
+        self.guesses = set()
+        self.guessed_words = set()
+        self.max_bad_guesses = MAX_BAD_GUESSES // len(players) + 1
+    
+    def state(self):
+        return GameState(self.word, self.guesses, self.guessed_words,
+                         self.score, self.max_bad_guesses)
+    
+    def turn(self, player):
+       
+        state = self.state()
+        while True:
+            guess = player.turn(state).strip().upper()
+            #print('guess ',guess)
+            if len(guess) == 0:
+                continue
+            elif len(guess) > 1:
+                # player attempted to solve
+                if guess == self.word:
+                    self.guesses |= set(self.word)
+                    print(f"{player.name} solved the puzzle!")
+                else:
+                    print(f"Sorry, {player.name}, the word is not '{guess}'.")
+                    self.guessed_words.add(guess)
+                    self.score[player.name] += 1
+                return
+            elif guess in self.guesses:
+                print(f"{guess} has already been guessed.")
+            elif not guess.isalpha():
+                print(f"{guess} is not a letter.")
+            else:
+                # player made a valid one-letter guess
+                self.guesses.add(guess)
+                if guess not in self.word:
+                    print(f"Sorry, {player.name}, there is no {guess} in the"
+                          " word.")
+                    self.score[player.name] += 1
+                else:
+                    count = self.word.count(guess)
+                    verb, plural = ("is", "") if count == 1 else ("are", "s")
+                    print(f"There {verb} {count} {guess}{plural} in the word!")
+                return
+    
+    def outcome(self):
+        if len(set(self.word) - self.guesses) == 0:
+            return "win"
+        elif all(v >= self.max_bad_guesses for v in self.score.values()):
+            return "loss"
+        else:
+            return None
+            
+    def play(self):
+        turn = -1
+        player = None
+        while self.outcome() is None:
+            turn += 1
+            player = self.players[turn % len(self.players)]
+            if self.score[player.name] > self.max_bad_guesses:
+                continue
+            self.turn(player)
+        print(self.state().board)
+        outcome = self.outcome()
+        if outcome == "win":
+            print(f"{player.name} wins!")
+        else:
+            print(f"The word was {self.word}. Better luck next time.")
+
+
+class Player:
+    def __init__(self, name):
+        self.name = name
+    
+    def turn(self, state):
+        raise NotImplementedError
+
+class HumanPlayer(Player):
+    def turn(self, state):
+        print(state)
+        return input('{}, guess a letter or type a word to solve the puzzle:'\
+            .format(self.name))
+
+
+class ComputerPlayer(Player):
+    def __init__(self, name, vocab):
+        self.name = name
+        self.vocab = vocab
+
+    def turn(self, state):
+        word_options = list()
+        if (len(state.good_guesses) * 2 <= state.blank_count):
+            return self._guess_vowel_(state)
+        else:
+            word_options = self._guess_word_(state)
+        if len(word_options) > 0 and len(word_options) < 3:
+            return choice(list(word_options))
+        return choice(list(state.unguessed))
+
+    def _guess_word_(self, state):
+        matching_words = set()
+        for word in self.vocab:
+            if state.match(str(word)):
+                matching_words.add(word)
+        words_guessed_chars = set()
+        for word in matching_words:
+            for bad_guess in state.bad_guesses:
+                if word.find(bad_guess) > -1:
+                    words_guessed_chars.add(word)
+        matching_words = matching_words.difference(state.guessed_words)
+        matching_words = matching_words.difference(words_guessed_chars)
+        return matching_words
+
+    def _guess_vowel_(self, state):
+        unguessed_vowels = set(['A', 'E', 'I', 'O', 'U']).difference(
+            state.guesses)
+        if len(unguessed_vowels) > 0:
+            return choice(list(unguessed_vowels))
+        else:
+            return choice(list(state.unguessed))
+
+
+def main(wordlist, human_players, computer_player=False, computer_vocab=None):
+    with open(wordlist, "r", encoding="utf-8") as f:
+        words = [line.strip().upper() for line in f
+                 if len(line.strip()) >= MIN_WORD_LEN]
+    players = [HumanPlayer(name) for name in human_players]
+    if computer_player:
+        if computer_vocab is not None:
+            with open(computer_vocab, "r", encoding="utf-8") as f:
+                vocab = [line.strip().upper() for line in f]
+        else:
+            vocab = words[:]
+        players.append(ComputerPlayer("Computer", vocab))
+    game = Game(words, players)
+    game.play()
+
+
+def parse_args(arglist):
+    parser = ArgumentParser()
+    parser.add_argument("wordlist", help="path to word list text file")
+    parser.add_argument("names", nargs="*", help="player names")
+    parser.add_argument("-c", "--computer_player", action="store_true",
+                        help="add a computer player")
+    parser.add_argument("-v", "--computer_vocab", help="path to word list for"
+                        " computer")
+    return parser.parse_args(arglist)
+
+
+if __name__ == "__main__":
+    args = parse_args(sys.argv[1:])
+    main(args.wordlist, args.names, args.computer_player, args.computer_vocab)
+
+
+
+    
